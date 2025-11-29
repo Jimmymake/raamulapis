@@ -1,18 +1,23 @@
+// src/routes/products.js
 import express from "express";
 import productController from "../controllers/productController.js";
-import { authenticateToken } from "../middlewares/auth.js";
+import { authenticateToken, isAdmin } from "../middlewares/rbac.js";
+import { 
+  validateCreateProduct, 
+  validateUpdateProduct, 
+  validateIdParam 
+} from "../middlewares/validate.js";
 
 const router = express.Router();
 
-// Public routes
+// Public routes - anyone can view products
 router.get("/", productController.getAll);
-router.get("/:id", productController.getById);
-router.get("/sku/:sku", productController.getBySku);
+router.get("/sku/:sku", productController.getBySku);  // Must be before /:id
+router.get("/:id", validateIdParam, productController.getById);
 
-// Protected routes - require authentication
-router.post("/", authenticateToken, productController.create);
-router.put("/:id", authenticateToken, productController.update);
-router.delete("/:id", authenticateToken, productController.delete);
+// Protected routes - only admins can manage products
+router.post("/", authenticateToken, isAdmin, validateCreateProduct, productController.create);
+router.put("/:id", authenticateToken, isAdmin, validateUpdateProduct, productController.update);
+router.delete("/:id", authenticateToken, isAdmin, validateIdParam, productController.delete);
 
 export default router;
-

@@ -19,7 +19,7 @@ async function ensureOrdersTable() {
       pricing JSON NOT NULL,
       shipping JSON,
       payment JSON,
-      order_status ENUM('pending', 'processing', 'shipped', 'delivered', 'cancelled') DEFAULT 'pending',
+      order_status ENUM('pending', 'confirmed', 'processing', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled', 'returned') DEFAULT 'pending',
       notes TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -73,21 +73,27 @@ class Order {
       return null;
     }
 
-   if (typeof value === "string") {
-  // Prevent [object Object] breaking JSON.parse()
-  if (value.startsWith("[object")) {
-    // Convert invalid string to valid JSON string
-    return JSON.stringify({});
-  }
+    // If it's already an object/array, stringify it
+    if (typeof value === "object") {
+      return JSON.stringify(value);
+    }
 
-  try {
-    JSON.parse(value);
-    return value;
-  } catch {
-    throw new Error(`${label} must be valid JSON`);
-  }
-}
+    if (typeof value === "string") {
+      // Prevent [object Object] breaking JSON.parse()
+      if (value.startsWith("[object")) {
+        return JSON.stringify({});
+      }
 
+      try {
+        JSON.parse(value);
+        return value;
+      } catch {
+        throw new Error(`${label} must be valid JSON`);
+      }
+    }
+
+    // For other types, stringify them
+    return JSON.stringify(value);
   }
 
   static ensureRequiredFields(order_id, items, pricing) {
@@ -162,30 +168,44 @@ class Order {
     return rows.map((row) => Order.mapRowToOrder(row));
   }
 
-  static async findAll(filters = {}) {
-    let query = "SELECT * FROM orders WHERE 1=1";
+  static async findAll(filters = {}, pagination = {}) {
+    let baseQuery = "FROM orders WHERE 1=1";
     const params = [];
 
     if (filters.order_status) {
-      query += " AND order_status = ?";
+      baseQuery += " AND order_status = ?";
       params.push(filters.order_status);
     }
 
     if (filters.customer_id) {
-      query += " AND customer_id = ?";
+      baseQuery += " AND customer_id = ?";
       params.push(filters.customer_id);
     }
 
     if (filters.search) {
-      query += " AND (order_id LIKE ? OR customer_id LIKE ?)";
+      baseQuery += " AND (order_id LIKE ? OR customer_id LIKE ?)";
       const searchTerm = `%${filters.search}%`;
       params.push(searchTerm, searchTerm);
     }
 
-    query += " ORDER BY created_at DESC";
+    // Get total count
+    const [countResult] = await pool.execute(`SELECT COUNT(*) as total ${baseQuery}`, params);
+    const total = countResult[0].total;
+
+    // Get paginated results
+    let query = `SELECT * ${baseQuery} ORDER BY created_at DESC`;
+    
+    if (pagination.limit) {
+      query += ` LIMIT ${parseInt(pagination.limit)}`;
+      if (pagination.offset) {
+        query += ` OFFSET ${parseInt(pagination.offset)}`;
+      }
+    }
 
     const [rows] = await pool.execute(query, params);
-    return rows.map((row) => Order.mapRowToOrder(row));
+    const orders = rows.map((row) => Order.mapRowToOrder(row));
+
+    return { orders, total };
   }
 
   static async update(id, orderData) {
@@ -256,16 +276,32 @@ class Order {
     return result.affectedRows > 0;
   }
 
+  // Safe JSON parse helper
+  static safeJsonParse(value, defaultValue = null) {
+    if (!value) return defaultValue;
+    if (typeof value === 'object') return value; // Already parsed by MySQL
+    if (typeof value === 'string') {
+      // Handle invalid "[object Object]" strings
+      if (value.includes('[object Object]')) return defaultValue;
+      try {
+        return JSON.parse(value);
+      } catch {
+        return defaultValue;
+      }
+    }
+    return defaultValue;
+  }
+
   static mapRowToOrder(row) {
     return new Order(
       row.id,
       row.order_id,
       row.customer_id,
-      row.customer ? JSON.parse(row.customer) : null,
-      row.items ? JSON.parse(row.items) : [],
-      row.pricing ? JSON.parse(row.pricing) : null,
-      row.shipping ? JSON.parse(row.shipping) : null,
-      row.payment ? JSON.parse(row.payment) : null,
+      Order.safeJsonParse(row.customer, null),
+      Order.safeJsonParse(row.items, []),
+      Order.safeJsonParse(row.pricing, null),
+      Order.safeJsonParse(row.shipping, null),
+      Order.safeJsonParse(row.payment, null),
       row.order_status,
       row.notes,
       row.created_at,

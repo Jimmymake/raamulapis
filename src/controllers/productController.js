@@ -1,4 +1,5 @@
 import Product from "../models/productModel.js";
+import { parsePagination, buildPaginationMeta } from "../utils/pagination.js";
 
 class ProductController {
   async create(req, res) {
@@ -45,8 +46,13 @@ class ProductController {
         search: req.query.search,
       };
 
-      const products = await Product.findAll(filters);
-      res.status(200).json({ count: products.length, products });
+      const { page, limit, offset } = parsePagination(req.query);
+      const { products, total } = await Product.findAll(filters, { limit, offset });
+      
+      res.status(200).json({ 
+        products,
+        pagination: buildPaginationMeta(total, page, limit)
+      });
     } catch (error) {
       res.status(500).json({ message: "Error fetching products", error: error.message });
     }

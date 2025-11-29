@@ -1,22 +1,33 @@
 {
   "name": "raamulapis",
-  "version": "1.0.0",
-  "description": "",
+  "version": "2.0.0",
+  "description": "E-commerce API with M-Pesa Payment Integration",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js"
   },
-  "keywords": [],
+  "keywords": [
+    "ecommerce",
+    "mpesa",
+    "payment",
+    "api"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "axios": "^1.6.0",
     "bcrypt": "^6.0.0",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "express-validator": "^7.3.1",
     "jsonwebtoken": "^9.0.2",
-    "mysql2": "^3.15.3"
+    "multer": "^2.0.2",
+    "mysql2": "^3.15.3",
+    "nodemailer": "^7.0.11"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"

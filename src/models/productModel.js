@@ -43,6 +43,17 @@ async function ensureProductsTable() {
 
 ensureProductsTable();
 
+// Helper function to safely parse JSON (handles both string and object)
+function safeJsonParse(value, defaultValue = []) {
+  if (!value) return defaultValue;
+  if (typeof value === 'object') return value; // Already parsed
+  try {
+    return JSON.parse(value);
+  } catch {
+    return defaultValue;
+  }
+}
+
 class Product {
   constructor(
     id,
@@ -169,8 +180,8 @@ class Product {
       product.packaging,
       product.composition,
       product.usage,
-      product.images ? JSON.parse(product.images) : [],
-      product.tags ? JSON.parse(product.tags) : [],
+      safeJsonParse(product.images, []),
+      safeJsonParse(product.tags, []),
       product.status,
       product.created_at,
       product.updated_at
@@ -197,43 +208,55 @@ class Product {
       product.packaging,
       product.composition,
       product.usage,
-      product.images ? JSON.parse(product.images) : [],
-      product.tags ? JSON.parse(product.tags) : [],
+      safeJsonParse(product.images, []),
+      safeJsonParse(product.tags, []),
       product.status,
       product.created_at,
       product.updated_at
     );
   }
 
-  static async findAll(filters = {}) {
-    let query = "SELECT * FROM products WHERE 1=1";
+  static async findAll(filters = {}, pagination = {}) {
+    let baseQuery = "FROM products WHERE 1=1";
     const params = [];
 
     if (filters.category) {
-      query += " AND category = ?";
+      baseQuery += " AND category = ?";
       params.push(filters.category);
     }
 
     if (filters.brand) {
-      query += " AND brand = ?";
+      baseQuery += " AND brand = ?";
       params.push(filters.brand);
     }
 
     if (filters.status) {
-      query += " AND status = ?";
+      baseQuery += " AND status = ?";
       params.push(filters.status);
     }
 
     if (filters.search) {
-      query += " AND (name LIKE ? OR description LIKE ? OR sku LIKE ?)";
+      baseQuery += " AND (name LIKE ? OR description LIKE ? OR sku LIKE ?)";
       const searchTerm = `%${filters.search}%`;
       params.push(searchTerm, searchTerm, searchTerm);
     }
 
-    query += " ORDER BY created_at DESC";
+    // Get total count
+    const [countResult] = await pool.execute(`SELECT COUNT(*) as total ${baseQuery}`, params);
+    const total = countResult[0].total;
+
+    // Get paginated results
+    let query = `SELECT * ${baseQuery} ORDER BY created_at DESC`;
+    
+    if (pagination.limit) {
+      query += ` LIMIT ${parseInt(pagination.limit)}`;
+      if (pagination.offset) {
+        query += ` OFFSET ${parseInt(pagination.offset)}`;
+      }
+    }
 
     const [rows] = await pool.execute(query, params);
-    return rows.map((product) => {
+    const products = rows.map((product) => {
       return new Product(
         product.id,
         product.name,
@@ -249,13 +272,15 @@ class Product {
         product.packaging,
         product.composition,
         product.usage,
-        product.images ? JSON.parse(product.images) : [],
-        product.tags ? JSON.parse(product.tags) : [],
+        safeJsonParse(product.images, []),
+        safeJsonParse(product.tags, []),
         product.status,
         product.created_at,
         product.updated_at
       );
     });
+
+    return { products, total };
   }
 
   static async update(id, productData) {
