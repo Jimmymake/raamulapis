@@ -19,29 +19,67 @@ const __dirname = path.dirname(__filename);
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 3002;
+const NODE_ENV = process.env.NODE_ENV || "development";
+const isProduction = NODE_ENV === "production";
+
+// Trust proxy for production (behind nginx/load balancer)
+if (isProduction) {
+  app.set("trust proxy", 1);
+}
+
+// Security headers (manual implementation - no helmet dependency needed)
+app.use((req, res, next) => {
+  // Prevent clickjacking
+  res.setHeader("X-Frame-Options", "DENY");
+  // Prevent MIME type sniffing
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  // XSS protection
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  // Referrer policy
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  // Remove powered by header
+  res.removeHeader("X-Powered-By");
+  
+  if (isProduction) {
+    // Strict Transport Security (HTTPS only)
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  
+  next();
+});
+
+// Body parser with size limit
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // Serve static files (uploaded images)
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
-
-const PORT = process.env.PORT || 3002;
+app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
+  maxAge: isProduction ? "1d" : 0, // Cache in production
+  etag: true
+}));
 
 // CORS Configuration - Allow multiple origins
 const allowedOrigins = [
-  "http://localhost:5173",      // Vite default
-  "http://localhost:3000",      // React default
-  "http://localhost:3001",      // Alternative
-  "http://localhost:4200",      // Angular default
-  "http://localhost:8080",      // Vue default
-  "http://127.0.0.1:5173",
-  "http://127.0.0.1:3000",
-  process.env.CLIENT_URL,       // From environment
-  process.env.FRONTEND_URL,     // Alternative env var
-].filter(Boolean); // Remove undefined/null values
+  // Development origins
+  ...(isProduction ? [] : [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:4200",
+    "http://localhost:8080",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+  ]),
+  // Production origins from environment
+  process.env.CLIENT_URL,
+  process.env.FRONTEND_URL,
+  process.env.ADMIN_URL,
+].filter(Boolean);
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, Postman, etc.)
+    // Allow requests with no origin (mobile apps, Postman, server-to-server)
     if (!origin) return callback(null, true);
     
     // Check if origin is in allowed list
@@ -50,18 +88,19 @@ app.use(cors({
     }
     
     // Allow all origins in development
-    if (process.env.NODE_ENV === 'development') {
+    if (!isProduction) {
       return callback(null, true);
     }
     
-    // Block in production if not in allowed list
+    // Log blocked origins in production for debugging
+    console.warn(`[CORS] Blocked origin: ${origin}`);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
   exposedHeaders: ["Content-Range", "X-Content-Range"],
-  maxAge: 86400 // Cache preflight for 24 hours
+  maxAge: 86400
 }));
 
 // Health check endpoint
@@ -172,22 +211,45 @@ app.use("/api/uploads", uploadRoutes);
 app.use((req, res) => {
   res.status(404).json({ 
     message: "Route not found",
-    hint: "Visit GET /api for available endpoints"
+    ...(isProduction ? {} : { hint: "Visit GET /api for available endpoints" })
   });
 });
 
 // Global error handler
 app.use((err, req, res, next) => {
-  console.error("Error:", err);
+  // Log error (use proper logging in production)
+  if (isProduction) {
+    console.error(`[ERROR] ${req.method} ${req.path}:`, err.message);
+  } else {
+    console.error("Error:", err);
+  }
+  
+  // CORS error handling
+  if (err.message === 'Not allowed by CORS') {
+    return res.status(403).json({ message: "CORS policy violation" });
+  }
+  
   res.status(err.status || 500).json({
     message: err.message || "Internal server error",
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    ...(!isProduction && { stack: err.stack })
   });
 });
 
+// Graceful shutdown handling
+const gracefulShutdown = (signal) => {
+  console.log(`\n${signal} received. Shutting down gracefully...`);
+  process.exit(0);
+};
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// Start server
 app.listen(PORT, () => {
-  console.log(`🚀 E-commerce API with M-Pesa running on port ${PORT}`);
-  console.log(`📚 API documentation: http://localhost:${PORT}/api`);
-  console.log(`✅ Health check: http://localhost:${PORT}/`);
-  console.log(`💳 M-Pesa Environment: ${process.env.MPESA_ENVIRONMENT || 'sandbox'}`);
+  console.log(`🚀 Raamul API running on port ${PORT} [${NODE_ENV}]`);
+  if (!isProduction) {
+    console.log(`📚 API documentation: http://localhost:${PORT}/api`);
+    console.log(`✅ Health check: http://localhost:${PORT}/`);
+  }
+  console.log(`💳 Payment Provider: ${process.env.PAYMENT_PROVIDER || 'impala'}`);
 });

@@ -1,12 +1,16 @@
 {
   "name": "raamulapis",
   "version": "2.0.0",
-  "description": "E-commerce API with M-Pesa Payment Integration",
+  "description": "E-commerce API with M-Pesa/Impala Pay Payment Integration",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "start": "NODE_ENV=production node src/server.js",
+    "dev": "NODE_ENV=development nodemon src/server.js",
+    "prod": "NODE_ENV=production node src/server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "keywords": [
     "ecommerce",

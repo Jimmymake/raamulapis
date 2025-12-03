@@ -42,3 +42,4 @@ USER nodejs
 # Start the application
 CMD ["node", "src/server.js"]
 
+

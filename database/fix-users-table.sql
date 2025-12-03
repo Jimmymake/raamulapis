@@ -203,3 +203,4 @@ DESCRIBE users;
 SELECT '👥 Existing users:' AS Status;
 SELECT id, username, email, role, status FROM users;
 
+

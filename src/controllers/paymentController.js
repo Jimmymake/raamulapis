@@ -2,10 +2,15 @@
 import Payment from "../models/paymentModel.js";
 import Order from "../models/orderModel.js";
 import mpesaService from "../services/mpesaService.js";
+import impalaPayService from "../services/impalaPayService.js";
+import config from "../config/config.js";
 import { parsePagination, buildPaginationMeta } from "../utils/pagination.js";
 
+// Select payment provider based on config
+const paymentProvider = config.paymentProvider || "impala";
+
 class PaymentController {
-  // Initiate M-Pesa payment for an order
+  // Initiate payment for an order (supports Impala Pay and direct M-Pesa)
   async initiatePayment(req, res) {
     try {
       const { order_id, phone_number } = req.body;
@@ -46,35 +51,81 @@ class PaymentController {
         return res.status(400).json({ message: "Invalid order amount" });
       }
 
-      // Initiate STK push
-      const stkResponse = await mpesaService.initiateSTKPush(
-        phone_number,
-        amount,
-        order_id,
-        `Payment for order ${order_id}`
-      );
+      let paymentResponse;
+      let payment;
 
-      // Save payment record
-      const payment = await Payment.create({
-        order_id: order_id,
-        user_id: req.user.id,
-        amount: amount,
-        phone_number: phone_number,
-        merchant_request_id: stkResponse.MerchantRequestID,
-        checkout_request_id: stkResponse.CheckoutRequestID,
-      });
+      // Use Impala Pay or direct M-Pesa based on config
+      if (paymentProvider === "impala") {
+        // ===== IMPALA PAY (Mam-Laka) =====
+        console.log("Using Impala Pay provider...");
+        
+        const impalaResponse = await impalaPayService.initiatePayment(
+          phone_number,
+          amount,
+          order_id
+        );
 
-      res.status(200).json({
-        message: "Payment initiated successfully. Please check your phone to complete payment.",
-        payment: payment,
-        mpesa_response: {
+        // Save payment record
+        payment = await Payment.create({
+          order_id: order_id,
+          user_id: req.user.id,
+          amount: amount,
+          phone_number: phone_number,
+          merchant_request_id: impalaResponse.merchantRequestId,
+          checkout_request_id: impalaResponse.checkoutRequestId || impalaResponse.externalId,
+        });
+
+        paymentResponse = {
+          message: "Payment initiated successfully. Please check your phone to complete payment.",
+          provider: "impala_pay",
+          payment: payment,
+          response: {
+            external_id: impalaResponse.externalId,
+            transaction_id: impalaResponse.transactionId,
+            checkout_request_id: impalaResponse.checkoutRequestId,
+            response_code: impalaResponse.responseCode,
+            response_description: impalaResponse.responseDescription,
+            customer_message: impalaResponse.customerMessage,
+          }
+        };
+
+      } else {
+        // ===== DIRECT SAFARICOM M-PESA =====
+        console.log("Using direct M-Pesa provider...");
+        
+        const stkResponse = await mpesaService.initiateSTKPush(
+          phone_number,
+          amount,
+          order_id,
+          `Payment for order ${order_id}`
+        );
+
+        // Save payment record
+        payment = await Payment.create({
+          order_id: order_id,
+          user_id: req.user.id,
+          amount: amount,
+          phone_number: phone_number,
           merchant_request_id: stkResponse.MerchantRequestID,
           checkout_request_id: stkResponse.CheckoutRequestID,
-          response_code: stkResponse.ResponseCode,
-          response_description: stkResponse.ResponseDescription,
-          customer_message: stkResponse.CustomerMessage,
-        }
-      });
+        });
+
+        paymentResponse = {
+          message: "Payment initiated successfully. Please check your phone to complete payment.",
+          provider: "mpesa_direct",
+          payment: payment,
+          response: {
+            merchant_request_id: stkResponse.MerchantRequestID,
+            checkout_request_id: stkResponse.CheckoutRequestID,
+            response_code: stkResponse.ResponseCode,
+            response_description: stkResponse.ResponseDescription,
+            customer_message: stkResponse.CustomerMessage,
+          }
+        };
+      }
+
+      res.status(200).json(paymentResponse);
+
     } catch (error) {
       console.error("Payment initiation error:", error);
       res.status(500).json({
@@ -84,18 +135,33 @@ class PaymentController {
     }
   }
 
-  // M-Pesa callback handler
+  // Payment callback handler (supports both Impala Pay and direct M-Pesa)
   async mpesaCallback(req, res) {
     try {
-      console.log("M-Pesa Callback received:", JSON.stringify(req.body, null, 2));
+      console.log("Payment Callback received:", JSON.stringify(req.body, null, 2));
 
-      const callbackData = mpesaService.parseCallbackData(req.body);
+      let callbackData;
       
-      // Find payment by checkout request ID
-      const payment = await Payment.findByCheckoutRequestId(callbackData.checkoutRequestID);
+      // Detect callback type (Impala Pay vs Direct M-Pesa)
+      if (req.body.Body && req.body.Body.stkCallback) {
+        // Direct Safaricom M-Pesa callback
+        console.log("Processing Direct M-Pesa callback...");
+        callbackData = mpesaService.parseCallbackData(req.body);
+      } else {
+        // Impala Pay callback
+        console.log("Processing Impala Pay callback...");
+        callbackData = impalaPayService.parseCallbackData(req.body);
+      }
+      
+      // Find payment by checkout request ID or external ID
+      let payment = await Payment.findByCheckoutRequestId(callbackData.checkoutRequestID);
+      
+      if (!payment && callbackData.externalId) {
+        payment = await Payment.findByCheckoutRequestId(callbackData.externalId);
+      }
       
       if (!payment) {
-        console.error("Payment not found for checkout request:", callbackData.checkoutRequestID);
+        console.error("Payment not found for:", callbackData.checkoutRequestID || callbackData.externalId);
         return res.status(404).json({ message: "Payment record not found" });
       }
 
@@ -106,26 +172,45 @@ class PaymentController {
         callback_data: callbackData,
       };
 
-      if (callbackData.resultCode === 0) {
+      if (callbackData.resultCode === 0 || callbackData.status === "SUCCESS") {
         // Payment successful
         updateData.payment_status = 'completed';
         updateData.mpesa_receipt_number = callbackData.mpesaReceiptNumber;
         updateData.transaction_date = callbackData.transactionDate;
 
-        // Update order status to processing
-        await Order.update(payment.order_id, { order_status: 'processing' });
+        // Update order payment status
+        const order = await Order.findByOrderId(payment.order_id);
+        if (order) {
+          await Order.update(order.id, { 
+            order_status: 'confirmed',
+            payment: JSON.stringify({
+              ...order.payment,
+              status: 'completed',
+              receipt: callbackData.mpesaReceiptNumber,
+              completed_at: new Date().toISOString()
+            })
+          });
+        }
       } else {
         // Payment failed
         updateData.payment_status = 'failed';
       }
 
-      await Payment.updateStatus(callbackData.checkoutRequestID, updateData);
+      await Payment.updateStatus(payment.checkout_request_id, updateData);
 
-      // Acknowledge callback
-      res.status(200).json({ ResultCode: 0, ResultDesc: "Success" });
+      // Acknowledge callback (format depends on provider)
+      res.status(200).json({ 
+        ResultCode: 0, 
+        ResultDesc: "Success",
+        status: "OK" 
+      });
     } catch (error) {
       console.error("Callback processing error:", error);
-      res.status(500).json({ ResultCode: 1, ResultDesc: "Failed to process callback" });
+      res.status(500).json({ 
+        ResultCode: 1, 
+        ResultDesc: "Failed to process callback",
+        status: "ERROR"
+      });
     }
   }
 

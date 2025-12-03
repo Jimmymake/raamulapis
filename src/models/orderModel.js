@@ -135,14 +135,14 @@ class Order {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         order_id,
-        customer_id,
+        customer_id ?? null,  // Convert undefined to null
         customerJson,
         itemsJson,
         pricingJson,
         shippingJson,
         paymentJson,
-        order_status,
-        notes,
+        order_status ?? "pending",
+        notes ?? null,  // Convert undefined to null
       ]
     );
 
